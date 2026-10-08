@@ -1,0 +1,157 @@
+// # oochown Core Data Types
+//
+// Logline: Data structures for ownership specifications, passwd/group records, targets, and tmpfiles rules.
+//
+// Setup: Encapsulates user and group identification, ownership transitions, and declarative rules.
+//
+// Beats:
+//   1. Declare UserEntry and GroupEntry records for account database representation.
+//   2. Declare ChownSpec record representing parsed owner and group requirements.
+//   3. Declare ChownTarget record for individual path ownership transitions.
+//   4. Declare ChownSummary and TmpfilesEntry records.
+
+pub type UserEntry = struct {
+    name: String,
+    uid: Int,
+    gid: Int,
+    home: String,
+    shell: String
+};
+
+pub type GroupEntry = struct {
+    name: String,
+    gid: Int
+};
+
+pub type ChownSpec = struct {
+    raw: String,
+    owner_name: String,
+    owner_uid: Int,
+    group_name: String,
+    group_gid: Int,
+    has_owner: Bool,
+    has_group: Bool
+};
+
+pub type ChownTarget = struct {
+    path: String,
+    current_owner: String,
+    current_uid: Int,
+    current_group: String,
+    current_gid: Int,
+    target_owner: String,
+    target_uid: Int,
+    target_group: String,
+    target_gid: Int,
+    status: String,
+    error_message: String
+};
+
+pub type ChownSummary = struct {
+    total: Int,
+    changed: Int,
+    retained: Int,
+    failed: Int
+};
+
+pub type TmpfilesEntry = struct {
+    action: String,
+    path: String,
+    mode: String,
+    uid: String,
+    gid: String,
+    age: String,
+    argument: String
+};
+
+pub fn make_user_entry(name: String, uid: Int, gid: Int, home: String, shell: String) -> UserEntry {
+    return UserEntry {
+        name: name,
+        uid: uid,
+        gid: gid,
+        home: home,
+        shell: shell
+    };
+}
+
+pub fn make_group_entry(name: String, gid: Int) -> GroupEntry {
+    return GroupEntry {
+        name: name,
+        gid: gid
+    };
+}
+
+pub fn make_chown_spec(
+    raw: String,
+    owner: String,
+    uid: Int,
+    group: String,
+    gid: Int,
+    has_o: Bool,
+    has_g: Bool
+) -> ChownSpec {
+    return ChownSpec {
+        raw: raw,
+        owner_name: owner,
+        owner_uid: uid,
+        group_name: group,
+        group_gid: gid,
+        has_owner: has_o,
+        has_group: has_g
+    };
+}
+
+pub fn make_chown_target(
+    path: String,
+    c_owner: String,
+    c_uid: Int,
+    c_group: String,
+    c_gid: Int,
+    t_owner: String,
+    t_uid: Int,
+    t_group: String,
+    t_gid: Int,
+    status: String,
+    err_msg: String
+) -> ChownTarget {
+    return ChownTarget {
+        path: path,
+        current_owner: c_owner,
+        current_uid: c_uid,
+        current_group: c_group,
+        current_gid: c_gid,
+        target_owner: t_owner,
+        target_uid: t_uid,
+        target_group: t_group,
+        target_gid: t_gid,
+        status: status,
+        error_message: err_msg
+    };
+}
+
+pub fn make_chown_summary(tot: Int, chg: Int, ret: Int, fail: Int) -> ChownSummary {
+    return ChownSummary {
+        total: tot,
+        changed: chg,
+        retained: ret,
+        failed: fail
+    };
+}
+
+pub fn make_tmpfiles_entry(
+    action: String,
+    path: String,
+    mode: String,
+    uid: String,
+    gid: String
+) -> TmpfilesEntry {
+    return TmpfilesEntry {
+        action: action,
+        path: path,
+        mode: mode,
+        uid: uid,
+        gid: gid,
+        age: "-",
+        argument: "-"
+    };
+}

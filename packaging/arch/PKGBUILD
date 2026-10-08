@@ -1,7 +1,7 @@
 # Maintainer: openOODA-tools <ops@openooda.org>
 pkgname=oochown-bin
 _pkgname=oochown
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Changes user and group ownership of filesystem objects within container bounds."
 arch=('x86_64')

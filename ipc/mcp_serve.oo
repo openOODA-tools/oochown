@@ -1,0 +1,153 @@
+// # Model Context Protocol (MCP) Server for oochown
+//
+// Logline: JSON-RPC 2.0 stdio server providing ownership resolution, inspection, planning, and tmpfiles synthesis.
+//
+// Setup: Demands FsReadCap and ProcessCap to service streaming agent tool invocations over standard input.
+//
+// Beats:
+//   1. Handle MCP initialize handshake with server metadata.
+//   2. Expose tools/list catalogue with five sovereign ownership management tools.
+//   3. Dispatch tools/call for chown_resolve, inspect, plan, tmpfiles, and audit.
+//   4. Deliver streaming JSON-RPC responses over standard output.
+
+import "core/chown_types.oo";
+import "core/chown_lookup.oo";
+import "core/chown_plan.oo";
+import "ipc/json_field.oo";
+
+pub fn render_mcp_init(id: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"oochown\",\"version\":\"0.2.0\"}}}\n";
+}
+
+pub fn render_mcp_tools_list(id: String) -> String {
+    let mut out: String = "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"tools\":[";
+    out = out + "{\"name\":\"chown_resolve\",\"description\":\"Resolve user and group specification against /etc/passwd and /etc/group.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"spec\":{\"type\":\"string\"}},\"required\":[\"spec\"]}},";
+    out = out + "{\"name\":\"chown_inspect\",\"description\":\"Inspect filesystem path owner, group, UID, and GID.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}},";
+    out = out + "{\"name\":\"chown_plan\",\"description\":\"Plan ownership change for path without disk modification.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"spec\":{\"type\":\"string\"}},\"required\":[\"path\",\"spec\"]}},";
+    out = out + "{\"name\":\"chown_tmpfiles\",\"description\":\"Synthesize declarative systemd-tmpfiles rule for path.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"owner\":{\"type\":\"string\"},\"group\":{\"type\":\"string\"},\"recursive\":{\"type\":\"string\"}},\"required\":[\"path\"]}},";
+    out = out + "{\"name\":\"chown_audit\",\"description\":\"Audit path ownership against expected user and group requirements.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"expected_owner\":{\"type\":\"string\"},\"expected_group\":{\"type\":\"string\"}},\"required\":[\"path\"]}}";
+    out = out + "]}}\n";
+    return out;
+}
+
+pub fn handle_mcp_call(
+    fs: &FsReadCap,
+    proc_cap: &ProcessCap,
+    id: String,
+    tool_name: String,
+    req: String
+) -> String {
+    if tool_name == "chown_resolve" {
+        let spec_str: String = extract_json_str(req, "spec");
+        let users: List[UserEntry] = load_system_users(fs);
+        let groups: List[GroupEntry] = load_system_groups(fs);
+        let spec: ChownSpec = parse_chown_spec(spec_str, users, groups);
+        let res_text: String = "Spec: " + spec.raw + "\nOwner: " + spec.owner_name
+            + " (UID: " + to_string(spec.owner_uid) + ")\nGroup: " + spec.group_name
+            + " (GID: " + to_string(spec.group_gid) + ")\n";
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + json_escape(res_text) + "\"}]}}\n";
+    }
+
+    if tool_name == "chown_inspect" {
+        let path: String = extract_json_str(req, "path");
+        let owner: String = inspect_path_owner(proc_cap, path);
+        let uid: Int = inspect_path_uid(proc_cap, path);
+        let grp: String = inspect_path_group(proc_cap, path);
+        let gid: Int = inspect_path_gid(proc_cap, path);
+        let res_text: String = "Path: " + path + "\nOwner: " + owner + " (UID: " + to_string(uid) + ")\nGroup: " + grp + " (GID: " + to_string(gid) + ")\n";
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + json_escape(res_text) + "\"}]}}\n";
+    }
+
+    if tool_name == "chown_plan" {
+        let path: String = extract_json_str(req, "path");
+        let spec_str: String = extract_json_str(req, "spec");
+        let users: List[UserEntry] = load_system_users(fs);
+        let groups: List[GroupEntry] = load_system_groups(fs);
+        let spec: ChownSpec = parse_chown_spec(spec_str, users, groups);
+
+        let c_owner: String = inspect_path_owner(proc_cap, path);
+        let c_uid: Int = inspect_path_uid(proc_cap, path);
+        let c_group: String = inspect_path_group(proc_cap, path);
+        let c_gid: Int = inspect_path_gid(proc_cap, path);
+
+        let target: ChownTarget = plan_single_chown(path, c_owner, c_uid, c_group, c_gid, spec);
+        let res_text: String = "Path: " + path + "\nCurrent: " + target.current_owner + ":" + target.current_group
+            + "\nTarget: " + target.target_owner + ":" + target.target_group
+            + "\nPlan Status: " + target.status + "\n";
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + json_escape(res_text) + "\"}]}}\n";
+    }
+
+    if tool_name == "chown_tmpfiles" {
+        let path: String = extract_json_str(req, "path");
+        let mut owner: String = extract_json_str(req, "owner");
+        let mut grp: String = extract_json_str(req, "group");
+        if chars_len(owner) == 0 { owner = "-"; }
+        if chars_len(grp) == 0 { grp = "-"; }
+        let rec_str: String = extract_json_str(req, "recursive");
+        let is_rec: Bool = (rec_str == "true" || rec_str == "1");
+        let act: String = if is_rec { "Z" } else { "z" };
+        let entry: TmpfilesEntry = make_tmpfiles_entry(act, path, "-", owner, grp);
+        let rule: String = format_tmpfiles_rule(entry);
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + json_escape(rule) + "\n\"}]}}\n";
+    }
+
+    if tool_name == "chown_audit" {
+        let path: String = extract_json_str(req, "path");
+        let exp_owner: String = extract_json_str(req, "expected_owner");
+        let exp_group: String = extract_json_str(req, "expected_group");
+        let curr_owner: String = inspect_path_owner(proc_cap, path);
+        let curr_group: String = inspect_path_group(proc_cap, path);
+
+        let o_match: Bool = (chars_len(exp_owner) == 0 || curr_owner == exp_owner);
+        let g_match: Bool = (chars_len(exp_group) == 0 || curr_group == exp_group);
+
+        let mut res_text: String = "";
+        if o_match && g_match {
+            res_text = "COMPLIANT: " + path + " matches expected ownership (" + curr_owner + ":" + curr_group + ")\n";
+        } else {
+            res_text = "DRIFTED: " + path + " has ownership " + curr_owner + ":" + curr_group + ", expected " + exp_owner + ":" + exp_group + "\n";
+        }
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + json_escape(res_text) + "\"}]}}\n";
+    }
+
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n";
+}
+
+pub fn handle_mcp_message(fs: &FsReadCap, proc_cap: &ProcessCap, req: String) -> String {
+    let id_str: String = extract_json_str(req, "id");
+    let id: String = if chars_len(id_str) > 0 { "\"" + id_str + "\"" } else { "1" };
+    let method: String = extract_json_str(req, "method");
+
+    if method == "initialize" {
+        return render_mcp_init(id);
+    }
+    if method == "tools/list" {
+        return render_mcp_tools_list(id);
+    }
+    if method == "tools/call" {
+        let tool_name: String = extract_json_str(req, "name");
+        return handle_mcp_call(fs, proc_cap, id, tool_name, req);
+    }
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n";
+}
+
+pub fn run_mcp_server(fs: &FsReadCap, proc_cap: &ProcessCap) {
+    let mut running: Bool = true;
+    while running {
+        let line_res: Result[String, String] = oo_read_stdin_chunk(fs, 8192);
+        if !line_res.is_ok() {
+            running = false;
+        } else {
+            let line: String = match line_res { Ok(s) => s, Err(_) => "" };
+            let trimmed: String = str_trim(line);
+            if chars_len(trimmed) == 0 {
+                running = false;
+            } else {
+                let resp: String = handle_mcp_message(fs, proc_cap, trimmed);
+                if chars_len(resp) > 0 {
+                    print(resp);
+                }
+            }
+        }
+    }
+}

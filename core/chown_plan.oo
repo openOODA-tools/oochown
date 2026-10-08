@@ -1,0 +1,204 @@
+// # oochown Planning and Execution Engine
+//
+// Logline: Plans filesystem ownership changes, synthesizes systemd-tmpfiles rules, and executes updates.
+//
+// Setup: Inspects path metadata under ProcessCap and maps declarative ownership transitions.
+//
+// Beats:
+//   1. Inspect filesystem path owner and group attributes via ProcessCap.
+//   2. Formulate declarative change plans and detect retained ownerships.
+//   3. Synthesize systemd-tmpfiles declarative state specifications.
+//   4. Apply changes or generate dry-run preview records.
+
+import "core/chown_types.oo";
+import "core/chown_lookup.oo";
+import "std/fs/process/process.oo";
+
+pub fn inspect_path_owner(proc_cap: &ProcessCap, path: String) -> String {
+    let cmd: String = "stat -c '%U' " + path;
+    let res: Result[String, String] = process_exec(proc_cap, cmd);
+    if res.is_ok() {
+        let out: String = match res { Ok(s) => s, Err(_) => "" };
+        return str_trim(out);
+    }
+    return "unknown";
+}
+
+pub fn inspect_path_uid(proc_cap: &ProcessCap, path: String) -> Int {
+    let cmd: String = "stat -c '%u' " + path;
+    let res: Result[String, String] = process_exec(proc_cap, cmd);
+    if res.is_ok() {
+        let out: String = match res { Ok(s) => s, Err(_) => "" };
+        return parse_id(str_trim(out));
+    }
+    return -1;
+}
+
+pub fn inspect_path_group(proc_cap: &ProcessCap, path: String) -> String {
+    let cmd: String = "stat -c '%G' " + path;
+    let res: Result[String, String] = process_exec(proc_cap, cmd);
+    if res.is_ok() {
+        let out: String = match res { Ok(s) => s, Err(_) => "" };
+        return str_trim(out);
+    }
+    return "unknown";
+}
+
+pub fn inspect_path_gid(proc_cap: &ProcessCap, path: String) -> Int {
+    let cmd: String = "stat -c '%g' " + path;
+    let res: Result[String, String] = process_exec(proc_cap, cmd);
+    if res.is_ok() {
+        let out: String = match res { Ok(s) => s, Err(_) => "" };
+        return parse_id(str_trim(out));
+    }
+    return -1;
+}
+
+pub fn plan_single_chown(
+    path: String,
+    c_owner: String,
+    c_uid: Int,
+    c_group: String,
+    c_gid: Int,
+    spec: ChownSpec
+) -> ChownTarget {
+    let t_owner: String = if spec.has_owner { spec.owner_name } else { c_owner };
+    let t_uid: Int = if spec.has_owner { spec.owner_uid } else { c_uid };
+    let t_group: String = if spec.has_group { spec.group_name } else { c_group };
+    let t_gid: Int = if spec.has_group { spec.group_gid } else { c_gid };
+
+    let owner_matches: Bool = (!spec.has_owner || (chars_len(c_owner) > 0 && c_owner == t_owner) || (c_uid >= 0 && t_uid >= 0 && c_uid == t_uid));
+    let group_matches: Bool = (!spec.has_group || (chars_len(c_group) > 0 && c_group == t_group) || (c_gid >= 0 && t_gid >= 0 && c_gid == t_gid));
+
+    if owner_matches && group_matches {
+        return make_chown_target(path, c_owner, c_uid, c_group, c_gid, t_owner, t_uid, t_group, t_gid, "RETAINED", "");
+    }
+    return make_chown_target(path, c_owner, c_uid, c_group, c_gid, t_owner, t_uid, t_group, t_gid, "PENDING", "");
+}
+
+pub fn summarize_chown_targets(targets: List[ChownTarget]) -> ChownSummary {
+    let n: Int = list_len(targets);
+    let mut changed_count: Int = 0;
+    let mut retained_count: Int = 0;
+    let mut failed_count: Int = 0;
+    let mut i: Int = 0;
+
+    while i < n {
+        let t: ChownTarget = list_get(targets, i);
+        if t.status == "CHANGED" || t.status == "WOULD_CHANGE" {
+            changed_count = changed_count + 1;
+        } else if t.status == "RETAINED" {
+            retained_count = retained_count + 1;
+        } else if t.status == "FAILED" {
+            failed_count = failed_count + 1;
+        }
+        i = i + 1;
+    }
+    return make_chown_summary(n, changed_count, retained_count, failed_count);
+}
+
+pub fn build_chown_tmpfiles(targets: List[ChownTarget], recursive: Bool) -> List[TmpfilesEntry] {
+    let mut entries: List[TmpfilesEntry] = list_new();
+    let n: Int = list_len(targets);
+    let act: String = if recursive { "Z" } else { "z" };
+    let mut i: Int = 0;
+
+    while i < n {
+        let t: ChownTarget = list_get(targets, i);
+        let uid_str: String = if chars_len(t.target_owner) > 0 { t.target_owner } else { "-" };
+        let gid_str: String = if chars_len(t.target_group) > 0 { t.target_group } else { "-" };
+        let entry: TmpfilesEntry = make_tmpfiles_entry(act, t.path, "-", uid_str, gid_str);
+        entries = list_push(entries, entry);
+        i = i + 1;
+    }
+    return entries;
+}
+
+pub fn format_tmpfiles_rule(entry: TmpfilesEntry) -> String {
+    return entry.action + " " + entry.path + " " + entry.mode + " "
+        + entry.uid + " " + entry.gid + " " + entry.age + " " + entry.argument;
+}
+
+pub fn format_tmpfiles_config(entries: List[TmpfilesEntry]) -> String {
+    let mut out: String = "# /etc/tmpfiles.d/oochown.conf - declarative ownership rules\n"
+        + "# Type Path Mode UID GID Age Argument\n";
+    let n: Int = list_len(entries);
+    let mut i: Int = 0;
+    while i < n {
+        let e: TmpfilesEntry = list_get(entries, i);
+        out = out + format_tmpfiles_rule(e) + "\n";
+        i = i + 1;
+    }
+    return out;
+}
+
+pub fn execute_chown_plan(
+    proc_cap: &ProcessCap,
+    targets: List[ChownTarget],
+    spec: ChownSpec,
+    recursive: Bool,
+    dry_run: Bool
+) -> List[ChownTarget] {
+    let mut executed: List[ChownTarget] = list_new();
+    let n: Int = list_len(targets);
+    let mut i: Int = 0;
+
+    while i < n {
+        let t: ChownTarget = list_get(targets, i);
+        if t.status == "RETAINED" {
+            executed = list_push(executed, t);
+        } else if dry_run {
+            let updated: ChownTarget = make_chown_target(
+                t.path,
+                t.current_owner,
+                t.current_uid,
+                t.current_group,
+                t.current_gid,
+                t.target_owner,
+                t.target_uid,
+                t.target_group,
+                t.target_gid,
+                "WOULD_CHANGE",
+                ""
+            );
+            executed = list_push(executed, updated);
+        } else {
+            let flag: String = if recursive { "-R " } else { "" };
+            let cmd: String = "chown " + flag + spec.raw + " " + t.path;
+            let res: Result[String, String] = process_exec(proc_cap, cmd);
+            if res.is_ok() {
+                let updated: ChownTarget = make_chown_target(
+                    t.path,
+                    t.current_owner,
+                    t.current_uid,
+                    t.current_group,
+                    t.current_gid,
+                    t.target_owner,
+                    t.target_uid,
+                    t.target_group,
+                    t.target_gid,
+                    "CHANGED",
+                    ""
+                );
+                executed = list_push(executed, updated);
+            } else {
+                let updated: ChownTarget = make_chown_target(
+                    t.path,
+                    t.current_owner,
+                    t.current_uid,
+                    t.current_group,
+                    t.current_gid,
+                    t.target_owner,
+                    t.target_uid,
+                    t.target_group,
+                    t.target_gid,
+                    "FAILED",
+                    "operation failed or permission denied"
+                );
+                executed = list_push(executed, updated);
+            }
+        }
+        i = i + 1;
+    }
+    return executed;
+}

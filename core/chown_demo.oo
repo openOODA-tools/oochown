@@ -1,0 +1,81 @@
+// # oochown Synthetic Demonstration Engine
+//
+// Logline: Synthetic user/group database and filesystem fixtures for offline verification.
+//
+// Setup: Generates simulated UNIX ownership transitions and tmpfiles specifications.
+//
+// Beats:
+//   1. Construct sample ownership transition target scenarios.
+//   2. Provide synthetic verification summary.
+//   3. Generate demonstration tmpfiles declarative entries.
+//   4. Deliver deterministic test fixtures for CI and container sandboxes.
+
+import "core/chown_types.oo";
+import "core/chown_plan.oo";
+
+pub fn build_demo_targets() -> List[ChownTarget] {
+    let mut targets: List[ChownTarget] = list_new();
+    targets = list_push(targets, make_chown_target(
+        "/var/log/audit.log",
+        "root",
+        0,
+        "root",
+        0,
+        "audit",
+        150,
+        "audit",
+        150,
+        "WOULD_CHANGE",
+        ""
+    ));
+    targets = list_push(targets, make_chown_target(
+        "/home/alice/.profile",
+        "alice",
+        1001,
+        "alice",
+        1001,
+        "alice",
+        1001,
+        "alice",
+        1001,
+        "RETAINED",
+        ""
+    ));
+    targets = list_push(targets, make_chown_target(
+        "/srv/data/shared",
+        "root",
+        0,
+        "root",
+        0,
+        "staff",
+        50,
+        "staff",
+        50,
+        "WOULD_CHANGE",
+        ""
+    ));
+    targets = list_push(targets, make_chown_target(
+        "/etc/shadow",
+        "root",
+        0,
+        "root",
+        0,
+        "nobody",
+        65534,
+        "nobody",
+        65534,
+        "FAILED",
+        "permission denied (protected)"
+    ));
+    return targets;
+}
+
+pub fn build_demo_summary() -> ChownSummary {
+    let targets: List[ChownTarget] = build_demo_targets();
+    return summarize_chown_targets(targets);
+}
+
+pub fn build_demo_tmpfiles() -> List[TmpfilesEntry] {
+    let targets: List[ChownTarget] = build_demo_targets();
+    return build_chown_tmpfiles(targets, false);
+}

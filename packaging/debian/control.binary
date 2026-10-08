@@ -1,0 +1,11 @@
+Package: oochown
+Version: 0.2.0-1
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: openOODA-tools <ops@openooda.org>
+Depends: libc6
+Description: Sovereign OWNERSHIP MANAGER
+ Changes user and group ownership of filesystem objects with capability boundary constraints.
+ Pure openOODA utility with zero ambient authority, systemd-tmpfiles declarative
+ synthesis, terminal ergonomics, and native Model Context Protocol (MCP) server.

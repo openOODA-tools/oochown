@@ -1,0 +1,60 @@
+// # oochown Core Subsystem Anchor
+//
+// Logline: Verification anchor validating account parsing, ownership planning, and tmpfiles synthesis.
+//
+// Setup: Asserts internal invariants across data structures and resolution pipelines.
+//
+// Beats:
+//   1. Validate numeric UID/GID parsing and string classification.
+//   2. Validate colon-delimited /etc/passwd and /etc/group line parsing.
+//   3. Validate composite owner:group specification parsing.
+//   4. Validate systemd-tmpfiles rule formatting.
+
+import "core/chown_types.oo";
+import "core/chown_lookup.oo";
+import "core/chown_plan.oo";
+import "core/chown_demo.oo";
+
+pub fn verify_core_subsystem() -> Bool {
+    if !is_numeric("1000") || is_numeric("alice") {
+        return false;
+    }
+    if parse_id("1001") != 1001 {
+        return false;
+    }
+
+    let u_line: String = "alice:x:1001:1001:Alice:/home/alice:/bin/bash";
+    let u: UserEntry = parse_user_line(u_line);
+    if u.name != "alice" || u.uid != 1001 || u.gid != 1001 {
+        return false;
+    }
+
+    let g_line: String = "wheel:x:10:alice,bob";
+    let g: GroupEntry = parse_group_line(g_line);
+    if g.name != "wheel" || g.gid != 10 {
+        return false;
+    }
+
+    let mut users: List[UserEntry] = list_new();
+    users = list_push(users, u);
+    let mut groups: List[GroupEntry] = list_new();
+    groups = list_push(groups, g);
+
+    let spec: ChownSpec = parse_chown_spec("alice:wheel", users, groups);
+    if !spec.has_owner || !spec.has_group || spec.owner_uid != 1001 || spec.group_gid != 10 {
+        return false;
+    }
+
+    let plan1: ChownTarget = plan_single_chown("/tmp/test", "alice", 1001, "wheel", 10, spec);
+    if plan1.status != "RETAINED" {
+        return false;
+    }
+
+    let tmp_entry: TmpfilesEntry = make_tmpfiles_entry("z", "/var/lib/app", "-", "alice", "wheel");
+    let line: String = format_tmpfiles_rule(tmp_entry);
+    if !str_starts_with(line, "z /var/lib/app - alice wheel") {
+        return false;
+    }
+
+    return true;
+}

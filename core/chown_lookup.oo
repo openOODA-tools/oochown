@@ -1,0 +1,208 @@
+// # oochown Account Database Resolution Subsystem
+//
+// Logline: Ingests, parses, and indexes /etc/passwd and /etc/group records for identity resolution.
+//
+// Setup: Decodes colon-delimited account streams into typed user and group registries.
+//
+// Beats:
+//   1. Parse /etc/passwd and /etc/group line formats.
+//   2. Parse composite chown owner:group specification tokens.
+//   3. Resolve symbolic user and group names or numeric IDs.
+//   4. Ingest host identity records via explicit capability token.
+
+import "core/chown_types.oo";
+
+pub fn is_numeric(s: String) -> Bool {
+    let n: Int = chars_len(s);
+    if n == 0 {
+        return false;
+    }
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b < 48 || b > 55 && b > 57 || b < 48 {
+            if b < 48 || b > 57 {
+                return false;
+            }
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+pub fn parse_id(s: String) -> Int {
+    let n: Int = chars_len(s);
+    let mut val: Int = 0;
+    let mut i: Int = 0;
+    while i < n {
+        let b: Int = byte_at(s, i);
+        if b >= 48 && b <= 57 {
+            val = val * 10 + (b - 48);
+        } else {
+            return val;
+        }
+        i = i + 1;
+    }
+    return val;
+}
+
+pub fn parse_user_line(raw_line: String) -> UserEntry {
+    let line: String = str_trim(raw_line);
+    if chars_len(line) == 0 || str_starts_with(line, "#") {
+        return make_user_entry("", -1, -1, "", "");
+    }
+    let parts: List[String] = str_split(line, ":");
+    let count: Int = list_len(parts);
+    if count < 6 {
+        return make_user_entry("", -1, -1, "", "");
+    }
+    let name: String = str_trim(list_get(parts, 0));
+    let uid: Int = parse_id(str_trim(list_get(parts, 2)));
+    let gid: Int = parse_id(str_trim(list_get(parts, 3)));
+    let home: String = str_trim(list_get(parts, 5));
+    let shell: String = if count >= 7 { str_trim(list_get(parts, 6)) } else { "" };
+    return make_user_entry(name, uid, gid, home, shell);
+}
+
+pub fn parse_group_line(raw_line: String) -> GroupEntry {
+    let line: String = str_trim(raw_line);
+    if chars_len(line) == 0 || str_starts_with(line, "#") {
+        return make_group_entry("", -1);
+    }
+    let parts: List[String] = str_split(line, ":");
+    let count: Int = list_len(parts);
+    if count < 3 {
+        return make_group_entry("", -1);
+    }
+    let name: String = str_trim(list_get(parts, 0));
+    let gid: Int = parse_id(str_trim(list_get(parts, 2)));
+    return make_group_entry(name, gid);
+}
+
+pub fn parse_user_database(text: String) -> List[UserEntry] {
+    let mut entries: List[UserEntry] = list_new();
+    let lines: List[String] = str_split(text, "\n");
+    let n: Int = list_len(lines);
+    let mut i: Int = 0;
+    while i < n {
+        let line: String = list_get(lines, i);
+        let entry: UserEntry = parse_user_line(line);
+        if entry.uid >= 0 && chars_len(entry.name) > 0 {
+            entries = list_push(entries, entry);
+        }
+        i = i + 1;
+    }
+    return entries;
+}
+
+pub fn parse_group_database(text: String) -> List[GroupEntry] {
+    let mut entries: List[GroupEntry] = list_new();
+    let lines: List[String] = str_split(text, "\n");
+    let n: Int = list_len(lines);
+    let mut i: Int = 0;
+    while i < n {
+        let line: String = list_get(lines, i);
+        let entry: GroupEntry = parse_group_line(line);
+        if entry.gid >= 0 && chars_len(entry.name) > 0 {
+            entries = list_push(entries, entry);
+        }
+        i = i + 1;
+    }
+    return entries;
+}
+
+pub fn find_user_by_name(users: List[UserEntry], name: String) -> UserEntry {
+    let n: Int = list_len(users);
+    let mut i: Int = 0;
+    while i < n {
+        let u: UserEntry = list_get(users, i);
+        if u.name == name { return u; }
+        i = i + 1;
+    }
+    return make_user_entry("", -1, -1, "", "");
+}
+
+pub fn find_group_by_name(groups: List[GroupEntry], name: String) -> GroupEntry {
+    let n: Int = list_len(groups);
+    let mut i: Int = 0;
+    while i < n {
+        let g: GroupEntry = list_get(groups, i);
+        if g.name == name { return g; }
+        i = i + 1;
+    }
+    return make_group_entry("", -1);
+}
+
+pub fn parse_chown_spec(spec: String, users: List[UserEntry], groups: List[GroupEntry]) -> ChownSpec {
+    let clean: String = str_trim(spec);
+    let colon_pos: Int = str_index_of(clean, ":");
+
+    if colon_pos >= 0 {
+        let owner_part: String = str_slice(clean, 0, colon_pos);
+        let group_part: String = str_slice(clean, colon_pos + 1, chars_len(clean));
+        let has_o: Bool = (chars_len(owner_part) > 0);
+        let mut has_g: Bool = (chars_len(group_part) > 0);
+
+        let mut o_uid: Int = -1;
+        if has_o {
+            if is_numeric(owner_part) {
+                o_uid = parse_id(owner_part);
+            } else {
+                let u: UserEntry = find_user_by_name(users, owner_part);
+                o_uid = u.uid;
+            }
+        }
+
+        let mut g_gid: Int = -1;
+        if has_g {
+            if is_numeric(group_part) {
+                g_gid = parse_id(group_part);
+            } else {
+                let g: GroupEntry = find_group_by_name(groups, group_part);
+                g_gid = g.gid;
+            }
+        } else if has_o {
+            // "owner:" with trailing colon sets login group of owner
+            let u: UserEntry = find_user_by_name(users, owner_part);
+            if u.gid >= 0 {
+                g_gid = u.gid;
+                has_g = true;
+            }
+        }
+
+        return make_chown_spec(clean, owner_part, o_uid, group_part, g_gid, has_o, has_g);
+    }
+
+    let mut o_uid: Int = -1;
+    if is_numeric(clean) {
+        o_uid = parse_id(clean);
+    } else {
+        let u: UserEntry = find_user_by_name(users, clean);
+        o_uid = u.uid;
+    }
+
+    let o_name: String = str_slice(clean, 0, chars_len(clean));
+    return make_chown_spec(clean, o_name, o_uid, "", -1, true, false);
+}
+
+pub fn load_system_users(fs: &FsReadCap) -> List[UserEntry] {
+    let r: Result[String, String] = read_file(fs, "/etc/passwd");
+    if r.is_ok() {
+        let content: String = match r { Ok(s) => s, Err(_) => "" };
+        return parse_user_database(content);
+    }
+    let mut fallback: List[UserEntry] = list_new();
+    fallback = list_push(fallback, make_user_entry("root", 0, 0, "/root", "/bin/bash"));
+    return fallback;
+}
+
+pub fn load_system_groups(fs: &FsReadCap) -> List[GroupEntry] {
+    let r: Result[String, String] = read_file(fs, "/etc/group");
+    if r.is_ok() {
+        let content: String = match r { Ok(s) => s, Err(_) => "" };
+        return parse_group_database(content);
+    }
+    let mut fallback: List[GroupEntry] = list_new();
+    fallback = list_push(fallback, make_group_entry("root", 0));
+    return fallback;
+}

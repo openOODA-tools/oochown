@@ -1,0 +1,104 @@
+// # oochown Command-Line Options Subsystem
+//
+// Logline: Parser for POSIX chown flags, systemd-tmpfiles generation, and execution modes.
+//
+// Setup: Decodes argument tokens into typed ChownOpts configuration records.
+//
+// Beats:
+//   1. Declare ChownOpts record for flags and targets.
+//   2. Parse POSIX flags (-c, -f, -v, -R, --reference).
+//   3. Parse declarative and integration flags (--tmpfiles, --dry-run, --demo, --json, --mcp).
+//   4. Separate target ownership specification from filesystem target path list.
+
+pub type ChownOpts = struct {
+    spec: String,
+    reference: String,
+    files: List[String],
+    recursive: Bool,
+    changes_only: Bool,
+    verbose: Bool,
+    quiet: Bool,
+    dry_run: Bool,
+    tmpfiles_mode: Bool,
+    demo_mode: Bool,
+    json_mode: Bool,
+    help_mode: Bool,
+    version_mode: Bool,
+    mcp_mode: Bool
+};
+
+pub fn make_default_chown_opts() -> ChownOpts {
+    return ChownOpts {
+        spec: "",
+        reference: "",
+        files: list_new(),
+        recursive: false,
+        changes_only: false,
+        verbose: false,
+        quiet: false,
+        dry_run: false,
+        tmpfiles_mode: false,
+        demo_mode: false,
+        json_mode: false,
+        help_mode: false,
+        version_mode: false,
+        mcp_mode: false
+    };
+}
+
+pub fn parse_chown_opts(args: List[String]) -> ChownOpts {
+    let mut opts: ChownOpts = make_default_chown_opts();
+    let num_args: Int = list_len(args);
+    let mut positionals: List[String] = list_new();
+    let mut i: Int = 0;
+
+    while i < num_args {
+        let arg: String = list_get(args, i);
+
+        if arg == "-h" || arg == "--help" {
+            opts.help_mode = true;
+        } else if arg == "-V" || arg == "--version" {
+            opts.version_mode = true;
+        } else if arg == "-c" || arg == "--changes" {
+            opts.changes_only = true;
+        } else if arg == "-v" || arg == "--verbose" {
+            opts.verbose = true;
+        } else if arg == "-f" || arg == "--silent" || arg == "--quiet" {
+            opts.quiet = true;
+        } else if arg == "-R" || arg == "-r" || arg == "--recursive" {
+            opts.recursive = true;
+        } else if arg == "--dry-run" {
+            opts.dry_run = true;
+        } else if arg == "--tmpfiles" {
+            opts.tmpfiles_mode = true;
+        } else if arg == "--demo" {
+            opts.demo_mode = true;
+        } else if arg == "--json" {
+            opts.json_mode = true;
+        } else if arg == "--mcp" {
+            opts.mcp_mode = true;
+        } else if str_starts_with(arg, "--reference=") {
+            opts.reference = str_slice(arg, 12, chars_len(arg));
+        } else if arg == "--reference" && i + 1 < num_args {
+            i = i + 1;
+            opts.reference = list_get(args, i);
+        } else if !str_starts_with(arg, "-") {
+            positionals = list_push(positionals, arg);
+        }
+        i = i + 1;
+    }
+
+    let pos_len: Int = list_len(positionals);
+    if chars_len(opts.reference) > 0 {
+        opts.files = positionals;
+    } else if pos_len > 0 {
+        opts.spec = list_get(positionals, 0);
+        let mut idx: Int = 1;
+        while idx < pos_len {
+            opts.files = list_push(opts.files, list_get(positionals, idx));
+            idx = idx + 1;
+        }
+    }
+
+    return opts;
+}

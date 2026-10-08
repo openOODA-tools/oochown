@@ -1,0 +1,54 @@
+// # oochown IPC Subsystem Anchor
+//
+// Logline: Verification anchor validating JSON extraction, options parsing, and MCP protocols.
+//
+// Setup: Asserts IPC invariants across option decoding and JSON-RPC message formats.
+//
+// Beats:
+//   1. Validate JSON field extraction and escape formatting.
+//   2. Validate command-line options parsing for flags and targets.
+//   3. Validate MCP handshake response structures.
+//   4. Deliver IPC subsystem readiness predicate.
+
+import "ipc/json_field.oo";
+import "ipc/chown_opts.oo";
+import "ipc/mcp_serve.oo";
+
+pub fn verify_ipc_subsystem() -> Bool {
+    let raw: String = "owner: \"root\"\n";
+    let esc: String = json_escape(raw);
+    if !str_contains(esc, "\\\"root\\\"") {
+        return false;
+    }
+
+    let payload: String = "{\"method\":\"tools/call\",\"id\":15}";
+    let method: String = extract_json_str(payload, "method");
+    if method != "tools/call" {
+        return false;
+    }
+
+    let mut args: List[String] = list_new();
+    args = list_push(args, "-R");
+    args = list_push(args, "--dry-run");
+    args = list_push(args, "root:root");
+    args = list_push(args, "/tmp/app");
+    let opts: ChownOpts = parse_chown_opts(args);
+    if !opts.recursive || !opts.dry_run || opts.spec != "root:root" {
+        return false;
+    }
+    if list_len(opts.files) != 1 {
+        return false;
+    }
+
+    let init_resp: String = render_mcp_init("1");
+    if !str_contains(init_resp, "protocolVersion") {
+        return false;
+    }
+
+    let list_resp: String = render_mcp_tools_list("2");
+    if !str_contains(list_resp, "chown_resolve") {
+        return false;
+    }
+
+    return true;
+}

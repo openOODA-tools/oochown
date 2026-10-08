@@ -1,0 +1,82 @@
+// # oochown Terminal and Telemetry Renderer
+//
+// Logline: Formats POSIX diagnostic notices, systemd-tmpfiles rules, and JSON telemetry streams.
+//
+// Setup: Maps ChownTarget models into human-readable terminal outputs and JSON structures.
+//
+// Beats:
+//   1. Format individual file target status (changed, retained, dry-run, failure).
+//   2. Format execution summary counts and error warnings.
+//   3. Render structured JSON telemetry for automated agent ingestion.
+//   4. Deliver consistent POSIX chown diagnostic conventions.
+
+import "core/chown_types.oo";
+
+pub fn render_target_output(target: ChownTarget, verbose: Bool, changes_only: Bool, quiet: Bool) -> String {
+    if target.status == "CHANGED" {
+        return "changed ownership of '" + target.path + "' from "
+            + target.current_owner + ":" + target.current_group + " to "
+            + target.target_owner + ":" + target.target_group + "\n";
+    }
+    if target.status == "WOULD_CHANGE" {
+        return "[dry-run] would change ownership of '" + target.path + "' from "
+            + target.current_owner + ":" + target.current_group + " to "
+            + target.target_owner + ":" + target.target_group + "\n";
+    }
+    if target.status == "RETAINED" {
+        if changes_only {
+            return "";
+        }
+        if verbose {
+            return "ownership of '" + target.path + "' retained as "
+                + target.target_owner + ":" + target.target_group + "\n";
+        }
+        return "";
+    }
+    if target.status == "FAILED" {
+        if quiet {
+            return "";
+        }
+        return "oochown: failed to change ownership of '" + target.path + "': " + target.error_message + "\n";
+    }
+    return "";
+}
+
+pub fn render_summary_warnings(sum: ChownSummary) -> String {
+    let mut out: String = "";
+    if sum.failed > 0 {
+        out = out + "oochown: WARNING: " + to_string(sum.failed) + " path(s) failed ownership modification\n";
+    }
+    return out;
+}
+
+pub fn render_json_results(
+    targets: List[ChownTarget],
+    sum: ChownSummary,
+    spec_raw: String
+) -> String {
+    let mut out: String = "{\"status\":\"ok\",\"tool\":\"oochown\",\"spec\":\"" + spec_raw + "\"";
+    out = out + ",\"total\":" + to_string(sum.total);
+    out = out + ",\"changed\":" + to_string(sum.changed);
+    out = out + ",\"retained\":" + to_string(sum.retained);
+    out = out + ",\"failed\":" + to_string(sum.failed);
+    out = out + ",\"targets\":[";
+
+    let n: Int = list_len(targets);
+    let mut i: Int = 0;
+    while i < n {
+        let t: ChownTarget = list_get(targets, i);
+        out = out + "{\"path\":\"" + t.path
+            + "\",\"from_owner\":\"" + t.current_owner
+            + "\",\"from_group\":\"" + t.current_group
+            + "\",\"to_owner\":\"" + t.target_owner
+            + "\",\"to_group\":\"" + t.target_group
+            + "\",\"status\":\"" + t.status + "\"}";
+        if i < n - 1 {
+            out = out + ",";
+        }
+        i = i + 1;
+    }
+    out = out + "]}\n";
+    return out;
+}

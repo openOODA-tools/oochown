@@ -1,0 +1,38 @@
+// # oochown Render Subsystem Anchor
+//
+// Logline: Verification anchor validating terminal output renderers and JSON formatters.
+//
+// Setup: Asserts rendering invariants across changed, retained, and JSON outputs.
+//
+// Beats:
+//   1. Validate changed target output rendering.
+//   2. Validate retained target output filtering under changes_only.
+//   3. Validate JSON summary and target stream serialization.
+//   4. Deliver render subsystem readiness predicate.
+
+import "core/chown_types.oo";
+import "render/chown_theme.oo";
+
+pub fn verify_render_subsystem() -> Bool {
+    let t1: ChownTarget = make_chown_target("/srv/data", "root", 0, "root", 0, "staff", 50, "staff", 50, "CHANGED", "");
+    let s1: String = render_target_output(t1, false, false, false);
+    if !str_contains(s1, "changed ownership of '/srv/data'") {
+        return false;
+    }
+
+    let t2: ChownTarget = make_chown_target("/srv/data", "staff", 50, "staff", 50, "staff", 50, "staff", 50, "RETAINED", "");
+    let s2: String = render_target_output(t2, false, true, false);
+    if chars_len(s2) != 0 {
+        return false;
+    }
+
+    let mut list: List[ChownTarget] = list_new();
+    list = list_push(list, t1);
+    let sum: ChownSummary = make_chown_summary(1, 1, 0, 0);
+    let json_res: String = render_json_results(list, sum, "staff:staff");
+    if !str_contains(json_res, "\"to_owner\":\"staff\"") {
+        return false;
+    }
+
+    return true;
+}
